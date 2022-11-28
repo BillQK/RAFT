@@ -25,8 +25,44 @@ class Replica:
         while True:
             data, addr = self.socket.recvfrom(65535)
             msg = data.decode('utf-8')
+            status = True
+            self.processRequest(msg,  status)
 
             print("Received message '%s'" % (msg,), flush=True)
+            
+            
+            
+            
+    def processRequest(self, msg, status):
+        m = json.loads(msg)
+        if status: 
+            self.goodRequest(m)
+        else: 
+            self.failRequest(m) 
+            
+            
+    def constructMsgToSend(self, msg, status):
+        if status: 
+            if self.id == msg['leader']: 
+                msgToSent = {'src' : msg['dst'], 'dst' : msg['src'], 'leader': self.id,'type' : 'ok' , 'MID': msg['MID']} 
+                return msgToSent
+            else: 
+                msgToSent = {'src' : msg['dst'], 'dst' : msg['src'], 'leader': msg['leader'],'type' : 'redirect' , 'MID': msg['MID']} 
+                return msgToSent
+        else: 
+            msgToSent = {'src' : msg['dst'], 'dst' : msg['src'], 'leader': msg['leader'],'type' : 'fail' , 'MID': msg['MID']} 
+            return msgToSent
+
+    def goodRequest(self, msg):
+        msgToSent = self.constructMsgToSend(msg, True)
+        self.send(msgToSent)
+        
+    def failRequest(self, msg):
+        msgToSent = self.constructMsgToSend(msg, False) 
+        self.send(msgToSent)
+        
+        
+        
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='run a key-value store')

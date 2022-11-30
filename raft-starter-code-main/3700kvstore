@@ -36,11 +36,7 @@ class Replica:
         self.socket.bind(('localhost', 0))
 
         #just sends the initial start message to the other replicas, 
-        print("Replica %s starting up" % self.id, flush=True)
-        hello = { "src": self.id, "dst": BROADCAST, "leader": BROADCAST, "type": "hello" }
-        self.send(hello)
-        print("Sent hello message: %s" % hello, flush=True)
-
+        
         #for some reason setting the first timeout to be within the run doesn't work, so I guess upon initialization, 
         # we can just hold the election?
         #then after we established the leader then we can then so the socket select to then wait for messages?
@@ -182,6 +178,7 @@ class Replica:
 
         #eventaully do log checking later.
         #like make sure taht we don't set a leader to be one with a really stale log    
+
 
 
 if __name__ == "__main__":

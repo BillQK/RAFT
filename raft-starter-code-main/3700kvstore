@@ -4,8 +4,12 @@ import argparse, socket, time, json, select, struct, sys, math, os
 
 BROADCAST = "FFFF"
 
+class ReplicaModelState: 
+    
+
 class Replica:
     def __init__(self, port, id, others):
+        
         self.port = port
         self.id = id
         self.others = others
@@ -30,10 +34,9 @@ class Replica:
 
             print("Received message '%s'" % (msg,), flush=True)
             
-            
-            
-            
+               
     def processRequest(self, msg, status):
+    #   Replica's request: heart beat request , election request, append entry request 
         m = json.loads(msg)
         if status: 
             self.goodRequest(m)
@@ -43,8 +46,8 @@ class Replica:
             
     def constructMsgToSend(self, msg, status):
         if status: 
-            if self.id == msg['leader']: 
-                msgToSent = {'src' : msg['dst'], 'dst' : msg['src'], 'leader': self.id,'type' : 'ok' , 'MID': msg['MID']} 
+            if self.id != msg['leader']: 
+                msgToSent = {'src' : msg['dst'], 'dst' : msg['src'], 'leader': msg['leader']  , 'type' : 'ok' , 'MID': msg['MID']} 
                 return msgToSent
             else: 
                 msgToSent = {'src' : msg['dst'], 'dst' : msg['src'], 'leader': msg['leader'],'type' : 'redirect' , 'MID': msg['MID']} 

@@ -45,11 +45,11 @@ class Replica:
         # we can just hold the election?
         #then after we established the leader then we can then so the socket select to then wait for messages?
 
-        timeout = time.time() + random.uniform(.2, 3)
-        while time.time() < timeout:
-            continue
-        print(self.id + " timeout: " + str(timeout))
-        self.electionProcess()
+        #timeout = time.time() + random.uniform(.2, 3)
+        #while time.time() < timeout:
+        #    continue
+        #print(self.id + " timeout: " + str(timeout))
+        #self.electionProcess()
 
     def send(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), ('localhost', self.port))
@@ -63,14 +63,17 @@ class Replica:
             #   self.send(EmptyMessage)
 
             socket = [self.socket]
-            #currenttime = time.time()
-            #print("time before select?" + str(currenttime))
+            currenttime = time.time()
+            print("time before select?" + str(currenttime))
             socks = select.select(socket, [], [], 1.0)[0]
-            #print("time after select?" + str(currenttime))
+            print("time after select?" + str(currenttime))
 
             #trying to get this thing to only execute once,
             #the goal is once we use select for this socket and nothing returns, i.e the list is emtpy then we should hold 
             #an election,
+            if(len(socks) == 0):
+                print("made it here!")
+                
             for conn in socks:
                 #timerecognzied = time.time() - currenttime
                 #if we have not heard anything within the time, then we have timed out, and there needs to be a new election

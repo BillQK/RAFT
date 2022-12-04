@@ -13,7 +13,6 @@ class ReplicaStateModel:
         self.term = 0
         self.log = []
 
-#somehow creates multiple replicas, and then connects to the server and then the others can interact with them
 class Replica:
     def __init__(self, port, id, others):
         self.port = port
@@ -26,11 +25,14 @@ class Replica:
         self.votedFor = None
         self.currentLeader = BROADCAST
         self.votes = 0
-        #transaction log, kv store(which will have all the information)
-
-        #suppose get request, have to talk to kv store
-        #request, foward to current leader, and do raft operations, then it commits, and commits to its own state machine
-        #or return response
+        self.lastTerm = 0
+        self.committed = 0
+        #strictly used by the leader, and is used for determining for each replica what is the next entry to be commited.
+        #starts at the index of the new leaders log
+        self.nextIndex = {}
+        #dictionary for each replica to determine how much they have acknowledged
+        self.responselen = {}
+        self.leadercount = 0
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('localhost', 0))
@@ -41,59 +43,74 @@ class Replica:
         self.send(hello)
         print("Sent hello message: %s" % hello, flush=True)
 
-        #for some reason setting the first timeout to be within the run doesn't work, so I guess upon initialization, 
-        # we can just hold the election?
-        #then after we established the leader then we can then so the socket select to then wait for messages?
-
-        #timeout = time.time() + random.uniform(.2, 3)
-        #while time.time() < timeout:
-        #    continue
-        #print(self.id + " timeout: " + str(timeout))
-        #self.electionProcess()
-
     def send(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), ('localhost', self.port))
 
-
-
     def run(self):
         while True:
-            #if(self.state == "LEADER"):
-            #    EmptyMessage = {"src": self.id, "dst": replica , "leader": self.id, "type": "empty"}
-            #   self.send(EmptyMessage)
-
             socket = [self.socket]
-            currenttime = time.time()
-            print("time before select?" + str(currenttime))
-            socks = select.select(socket, [], [], 1.0)[0]
-            print("time after select?" + str(currenttime))
-
-            #trying to get this thing to only execute once,
-            #the goal is once we use select for this socket and nothing returns, i.e the list is emtpy then we should hold 
-            #an election,
-            if(len(socks) == 0):
-                print("made it here!")
+            if(self.state == "FOLLOWER"):
+                currenttime = time.time()
+                randomizedtime = random.uniform(.3, .5)
+                socks = select.select(socket, [], [], randomizedtime)[0]
+                latertime = time.time()
                 
-            for conn in socks:
-                #timerecognzied = time.time() - currenttime
-                #if we have not heard anything within the time, then we have timed out, and there needs to be a new election
-                #print("this socket triggered before its timeout: " + str(timerecognzied))
-                data, addr = conn.recvfrom(65535)
-                msg = data.decode('utf-8')
-                print("Received message '%s'" % (msg,), flush=True)
-                self.processRequest(msg)    
-            #self.electionProcess()
+                #if we have not heard anything within the time, then we have timed out, and there needs to be a new election 
+                if(latertime - currenttime > randomizedtime):
+                    self.electionProcess()
+
+                #else we should recieve on the socket like normal    
+                for conn in socks:
+                    data, addr = conn.recvfrom(65535)
+                    msg = data.decode('utf-8')
+                    #print("Received message '%s'" % (msg,), flush=True)
+                    self.processRequest(msg)
+
+            #if we are a candidate, then we just recieve like normal, and wait for votes        
+            elif(self.state == "CANDIDATE"):
+                socks = select.select(socket, [], [], 0.1)[0]
+
+                for conn in socks:
+                    data, addr = conn.recvfrom(65535)
+                    msg = data.decode('utf-8')
+                    #print("Received message '%s'" % (msg,), flush=True)
+                    self.processRequest(msg)
+
+            #else we must be a leader,
+            else:
+                currenttime = time.time()
+                socks = select.select(socket, [], [], 0.1)[0]
+                latertime = time.time()
+                #implement another select timer beacuse its probably sending uncessary heartbeats.
+                #leaders responsible for sending heartbeats to the rest of the replicas periodically,
+                #select timeout allows us to re-enter the msg to periodically send the requests
+
+                if(latertime - currenttime > 0.1):
+                    for replica in self.others:
+                        Heartbeat = {"src": self.id, "dst": replica , "leader": self.id, "type": "update"}
+                        self.leadercount += 1
+                        self.send(Heartbeat)
+   
+                for conn in socks:
+                    data, addr = conn.recvfrom(65535)
+                    msg = data.decode('utf-8')
+                    #print("Received message '%s'" % (msg,), flush=True)
+                    self.processRequest(msg)
 
     def processRequest(self, msg):
         msg = json.loads(msg)
 
         if(msg["type"] == "put"):
+            print("Received message '%s'" % (msg,), flush=True)
             self.doPutRequest(msg)
         if(msg["type"] == "get"):
+            print("Received message '%s'" % (msg,), flush=True)
             self.doGetRequest(msg)
         if(msg['type'] == "voting"):
+            print("Received message '%s'" % (msg,), flush=True)
             self.voteLeader(msg)
         if(msg['type'] == "goodvote"):
+            print("Received message '%s'" % (msg,), flush=True)
             self.votes += 1
             if(self.votes >= 3):
                 self.state = states[2]
@@ -102,10 +119,21 @@ class Replica:
                     newLeaderMessage = {"src": self.id, "dst": replica , "leader": self.id, "type": "update"}
                     self.currentLeader = self.id
                     self.state = states[2]
+                    self.nextIndex[replica] = len(self.transactionlog)
+                    self.responselen[replica] = 0
                     self.send(newLeaderMessage)
 
         if(msg['type'] == "update"):
-            self.currentLeader = msg["leader"]            
+            self.currentLeader = msg["leader"] 
+
+        if(msg['type'] == "response"):
+            print("Received message '%s'" % (msg,), flush=True)
+            self.determineResponse(msg)
+
+        if(msg['type'] == 'appendEntry'):
+            print("Received message '%s'" % (msg,), flush=True)
+            self.processAppendEntry(msg)
+
 
     def doPutRequest(self, msg):
         hdst = msg['src']
@@ -117,24 +145,104 @@ class Replica:
             self.send(redirectmessage)
 
         if(leader == self.currentLeader):
-            #after redirected to the leader, have to forward the command onto the other replicas and do the actual raft stuff
-            location = (msg['key'], msg['value'])
-            cmd = ("put", location)
-            self.transactionlog.append((cmd, self.term))
+            location = (msg['key'], msg['value'], hdst, mid)
+            logentry = (location, self.term)
+            self.transactionlog.append(logentry)
+            #basically saying that we have recieved this message and appended to our log
+            self.responselen[self.id] = len(self.transactionlog)
 
             #send to replicas, and wait for their response
             for replica in self.others:
-                AppendMessage = {"src": self.id, "dst": replica,  "leader": self.currentLeader, "type": "appendEntry", "key": msg['key'], "value": msg['value']}
-                self.send(AppendMessage)
+                #do this later
+                #newlog = self.createEntries(replica)
 
-            #after reaching quorom, then ratify message, 
-            statemachine[msg['key']] = msg['value']
-            okmessage = {"src": self.id, "dst": hdst,  "leader": self.currentLeader, "type": "ok", "MID": mid}
+                AppendMessage = {"src": self.id, "dst": replica,  "leader": self.currentLeader, "type": "appendEntry", "commitlength": self.committed, "entries": logentry}
+
+                if(self.nextIndex[replica] == 0):
+                    AppendMessage['lastIndex'] = 0
+                    self.send(AppendMessage)
+                else:
+                    nextIndex = self.nextIndex[replica]
+                    term = self.transactionlog[nextIndex][1]
+                    AppendMessage['lastIndex'] = nextIndex
+                    AppendMessage['lastTerm'] = term
+                    self.send(AppendMessage)
+
+
+
+    #method to create the missing entries for the given replica
+    def createEntries(self, replica):
+        pass
+
+    #method for a follower:
+    def processAppendEntry(self, msg):
+        explog = msg['lastIndex']
+        logentry = msg['entries']
+        failMsg = {"src": self.id, "dst": self.currentLeader,  "leader": self.currentLeader, "type" : "response", "success" : "false"}
+        if(len(self.transactionlog) >= explog):
+            if(explog == 0):
+                #overrite bad log here as well.
+                self.transactionlog.append(logentry)
+                print("this is what our current log looks like: " + str(self.transactionlog))
+                CorrectMsg = {"src": self.id, "dst": self.currentLeader,  "leader": self.currentLeader, "type" : "response", "success" : "true", "loglength" : len(self.transactionlog)}
+                self.send(CorrectMsg)
+            elif(self.transactionlog[explog - 1][1] == msg['lastTerm']):
+                #overrite bad log here, but for now since everything 
+                self.transactionlog.append(logentry)
+                CorrectMsg = {"src": self.id, "dst": self.currentLeader,  "leader": self.currentLeader, "type" : "response", "success" : "true", "loglength" : len(self.transactionlog)}
+                self.send(CorrectMsg)
+            else:
+                self.send(failMsg)
+        else:
+            self.send(failMsg)
+
+
+    def determineResponse(self, msg):
+        if(msg['success'] == "true"):
+            #print("made it here!")
+            fresponselen = msg['loglength']
+            follower = msg['src']
+            self.responselen[follower] = fresponselen
+            self.nextIndex[follower] = fresponselen
+            self.determineCommitted(msg)
+            
+        else:
+            src = msg["src"]
+            item = self.nextIndex[src]
+            self.nextIndex[src] = item - 1
+            
+            newterm = self.transactionlog[self.nextIndex[src]][1]
+            
+            #TODO
+            #make this only rely on entries since this fucks up if I just append key and value
+            newmsg = {"src": self.id, "dst": src,  "leader": self.currentLeader, "type": "appendEntry", "key": msg['key'], "value": msg['value'], "commitlength": self.committed, "lastIndex" : self.nextIndex[src], "lastTerm" : newterm}
+            self.send(newmsg)
+
+    def determineCommitted(self, msg):
+        #pass these in as parameters later...
+        #for each success response come in here I think?
+        #put this in a while loop to do this more efficiently.
+        totalcommitted = 0
+        for k, v in self.responselen.items():
+            if(v > self.committed):
+                totalcommitted += 1
+
+        if(totalcommitted >= 3):
+            print("made it here!")
+            #I'll  make this transaction log simpler sorry about this...
+            #Right now the log look like => [((key, value, mid, src), term)], creating one really long 3D array
+            #Ill make this into a basic tuple once I know how many variables I have set.
+            #instead reference the log that we have put in...
+            key = self.transactionlog[self.committed][0][0]
+            value = self.transactionlog[self.committed][0][1]
+            statemachine[key] = value
+
+            src = value = self.transactionlog[self.committed][0][2]
+            mid = self.transactionlog[self.committed][0][3]
+            self.committed +=1
+            okmessage = {"src": self.id, "dst": src,  "leader": self.currentLeader, "type": "ok", "MID": mid}
             self.send(okmessage)
 
-
-        #failmessage = {"src": self.id, "dst": hdst,  "leader": BROADCAST, "type": "fail", "MID": mid}  
-        #self.send(failmessage)
 
     def doGetRequest(self,msg):
         hdst = msg['src']
@@ -146,11 +254,9 @@ class Replica:
             self.send(redirectmessage)
 
         if(leader == self.currentLeader):
-            #not sure If I need to keep track of this in the actual transaction log, since it doens't modify anything
-
-            #send to replicas, and wait for their response I guess, this probably deals with select
             key = msg['key']
             value = statemachine[key]
+            #send fail message if we cannot get it etc.
             okmessage = {"src": self.id, "dst": hdst,  "leader": self.currentLeader, "type": "ok", "MID": mid, "value": value}
             self.send(okmessage)
 
@@ -158,10 +264,11 @@ class Replica:
     #TODO
     #for some reason with my initial election process, they always vote for themselves, and if I limit that to only one vote
     #they only vote once and don't vote for others, so need to fix this, it only works now because of the term condition check
+    #TODO
+    #eventually support having to relect different leaders.
     def electionProcess(self):
-        #increase the term amount for a new process
         newterm = self.term + 1
-        #set the state into candidate
+        self.term = newterm
         self.state = states[1]
         #for each replica relay the message and the new term number, and tell themt that we want to request a vote for a leader.
         for replica in self.others:
@@ -170,8 +277,10 @@ class Replica:
             self.votedFor = self.id
 
     def voteLeader(self, msg):
+        #worry about fail voting requests later,
         term  = msg['newterm']
         #if the replica recognizes that the term is greater than what we have, then we need to be a follower and accept that term
+        #need to check that we have already voted, makes it easier to stop voting for one process
         if(term > self.term):
             print(self.id + " voted")
             self.votedFor = msg['src']
@@ -180,11 +289,8 @@ class Replica:
             self.state = states[0]
             self.term = term
 
-        #handle the other possibilties i,e if we have an already better log and someone tries to send that request, should stop that vote etc,
-        #     
-
         #eventaully do log checking later.
-        #like make sure taht we don't set a leader to be one with a really stale log    
+        #like make sure that we don't set a leader to be one with a really stale log    
 
 
 if __name__ == "__main__":

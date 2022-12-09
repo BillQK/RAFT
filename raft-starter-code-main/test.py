@@ -4,7 +4,5 @@ other = (entry, 5)
 testarray.append(other)
 print(testarray[0][0][3])
 
-
 testdict = {}
-testdict["something"] = 1
-#print(testdict["hello"])
+testdict[("testing, test")] = ("testing12, testing123")

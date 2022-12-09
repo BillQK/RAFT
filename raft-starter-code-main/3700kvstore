@@ -3,29 +3,63 @@
 import argparse, socket, time, json, select, struct, sys, math, os
 
 BROADCAST = "FFFF"
+ROLE = ["LEADER", "CANDIDATE", "FOLLOWER"]
 
 class Replica:
     def __init__(self, port, id, others):
         self.port = port
         self.id = id
         self.others = others
-
+      
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('localhost', 0))
 
+        self.initialize()
+        
+        self.heartbeat = 0 
+        self.state = ROLE[2]
+        
+    def initialize(self): 
         print("Replica %s starting up" % self.id, flush=True)
         hello = { "src": self.id, "dst": BROADCAST, "leader": BROADCAST, "type": "hello" }
         self.send(hello)
         print("Sent hello message: %s" % hello, flush=True)
 
+
     def send(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), ('localhost', self.port))
 
+    def maintain_heartbeat(self):
+        t = time.time() - self.heartbeat
+        if self.state == "FOLLOWER" and t < 0.2: 
+            #TODO: send a heartbeat
+            self.heartbeat = time.time() 
+
+    def startElection(self): 
+        self.state = ROLE[1]
+        self.leader = BROADCAST
+        self.term += 1
+        self.voteFor = self.id 
+        #TODO: boardcast the vote and reset the timeout 
+        
+    
     def run(self):
         while True:
+            
+            self.maintain_heartbeat()
+            
             data, addr = self.socket.recvfrom(65535)
             msg = data.decode('utf-8')
-
+            
+            #TODO: some messages processing
+            
+            
+            
+            # Leader election if timout is reached 
+            if self.timeoutCheck() and self.state == ROLE[0]: 
+                self.startElection() 
+            
+        
             print("Received message '%s'" % (msg,), flush=True)
 
 if __name__ == "__main__":

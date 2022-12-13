@@ -88,6 +88,7 @@ class Replica:
                     #print("Received message '%s'" % (msg,), flush=True)
                     self.processRequest(msg)
 
+
     def processRequest(self, msg):
         msg = json.loads(msg)
 
@@ -198,14 +199,20 @@ class Replica:
 
     def createEntries(self, replica):
         #what we suspect the replicas log to be at
+        #this is wrong it sends the first part of the log not the last half, thats why when new entries comes in, it sends the wrong stuff...
         rloglength = self.nextIndex[replica]
-        Difference = len(self.transactionlog) - rloglength
-        entries = []
-        for i in range(Difference):
-            entry = self.transactionlog[i - 1]
-            entries.append(entry)  
+        #Difference = len(self.transactionlog) - rloglength
+        entries = self.transactionlog[rloglength::]
+        return entries
 
-        return entries    
+        #entries = []
+        #10, 8 ,2 ,second inded insteads of the last two
+        #for i in range(Difference):
+        #    entry = self.transactionlog[rloglength + i]
+        #    entries.append(entry) 
+
+
+        #return entries    
 
     #method for a follower:
     def processAppendEntry(self, msg):
@@ -271,9 +278,14 @@ class Replica:
 
 
     def removebadEntries(self, logentry, explog):
+
+        # 5 ints
+        # our current actually has 1 of them, then diff would be 4, but it would go 0 -4, instead of 1-5
+
         currentlog = len(self.transactionlog)
         #where we are vs where we think we are,
         meaningfulentries = currentlog - explog
+        print("meaningful entries: " + str(meaningfulentries) + " where the log things we are: " + str(explog))
 
         #don't want to remove entries that the log already has, and are commited, 
         #because it looks like that fucks with the state machinies because python mutation is amazing.
@@ -281,8 +293,13 @@ class Replica:
         #only remove when there are bogus entries that doesn't make sense,
 
         #if we accepted that at this log position we are the same, then we can stil add.
-        for i in range(len(logentry) - meaningfulentries):
-            self.transactionlog.append(logentry[i])
+        #important maybe, but why don't I just append each thing on?
+        if(meaningfulentries == 0):
+            for i in logentry:
+                self.transactionlog.append(i)
+        else:
+            entries = logentry[meaningfulentries::]
+            self.transactionlog.extend(entries)
 
         #truncate and remove bad entries, and then apply entires that the follower has not yet alraedy seen...    
 
@@ -320,6 +337,10 @@ class Replica:
                 self.send(newmsg)
 
     def determineCommitted(self, msg):
+        #another time to trigger to commit whatever we have in the log, service the clients faster?
+        #respond to put requets, and then getting a ton of get requests, and didn't respond back to clients with oks yet
+
+
         #put this in a while loop to do this more efficiently, especially when a new leader comes in.
         totalcommitted = 0
         for k, v in self.responselen.items():

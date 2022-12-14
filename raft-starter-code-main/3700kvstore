@@ -36,6 +36,8 @@ class Replica:
         #array for when the leader is unknown, and we recieve get/put requests.
         self.msgqueue = []
         self.msgsent = 0
+        self.msgtimer = time.time()
+        self.timeout = random.uniform(.3, .5)
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('localhost', 0))
@@ -51,23 +53,26 @@ class Replica:
 
     def run(self):
         while True:
+            #this needs an entire rework because now that I care about receiving missed messages for the leader,
+            # and for some reason, the timeouts before gets clogged from the incoming put requests so I need to change the timeout system.
+
             socket = [self.socket]
             if(self.state == "FOLLOWER" or self.state == "CANDIDATE"):
                 currenttime = time.time()
                 randomizedtime = random.uniform(.3, .5)
-                socks = select.select(socket, [], [], randomizedtime)[0]
+                socks = select.select(socket, [], [], self.timeout)[0]
                 #having a timeer on select is weird, idk how it worked last time,
                 # but now random leader crashes just clog the socket so it won't time out...
                 latertime = time.time()
                 
                 #if we have not heard anything within the time, then we have timed out, and there needs to be a new election 
+                #anything that we care about for the candidate/follower i.e a message from a leader, not put request,
+                v = time.time() - self.msgtimer
                 if(latertime - currenttime > randomizedtime):
-                    self.currentLeader == "FFFF"
-                    print("Heading into candidate state!")
-                    self.electionProcess()
-
-                print("this is when the socket exits the select:" + str(latertime - currenttime))
-                print("this was the randomized time created:" + str(randomizedtime))     
+                    #only happens when the simulator doesn't know who the leader is...
+                    #self.currentLeader = self.id
+                    #print("Heading into candidate state!")
+                    self.electionProcess()    
 
                 #else we should recieve on the socket like normal    
                 for conn in socks:
@@ -107,14 +112,16 @@ class Replica:
             print("Received message '%s'" % (msg,), flush=True)
             self.voteLeader(msg)
         if(msg['type'] == "vote"):
+            self.resettimer()
             print("Received message '%s'" % (msg,), flush=True)
+            #for some reason terms jump up by two now,
+            #if you are in candidate state you should add to it, i guess?, it just sends out one more update message.
             self.processVote(msg)
             if(self.votes >= 3):
                 #clear out the amount of votes we recieved.
                 self.votes = 0
                 self.state = states[2]
-                #once we reach a majority broadcast an empty append message to other machines, for now just updates
-                #may need to include term in here?
+                #for now does this election twice, will see how often it does it.
                 for replica in self.others:
                     print("NEW LEADER: " + self.id)
                     newLeaderMessage = {"src": self.id, "dst": replica , "leader": self.id, "type": "update", "term": self.term, "commitlength": self.committed}
@@ -123,21 +130,24 @@ class Replica:
                     self.responselen[replica] = 0
                     self.send(newLeaderMessage)
 
-                #self.sendredirects()    
+                self.sendredirects()    
 
         if(msg['type'] == "update"):
+            self.resettimer()
             if(msg['term'] < self.term):
                 self.send({"src": self.id, "dst": msg['src'],  "leader": self.currentLeader, "type" : "response", "success" : "false", "term": self.term})
 
             else:
                 self.currentLeader = msg["leader"]
-                #self.sendredirects()  
+                self.sendredirects()  
 
+        #leader should only have access to appendrpc responses.    
         if(msg['type'] == "response"):
             print("Received message '%s'" % (msg,), flush=True)
             self.determineResponse(msg)
 
         if(msg['type'] == 'appendEntry'):
+            self.resettimer()
             print("Received message '%s'" % (msg,), flush=True)
             self.processAppendEntry(msg)
 
@@ -163,13 +173,19 @@ class Replica:
                         self.send(redirectmessage)
                         self.msgqueue.remove(i)
             else:
-                print("made it here!, why are we still redirecting?")                        
+                print("made it here!, why are we still redirecting?")    
+
+    def resettimer(self):
+        #print("my message timer was reset because I received a message")
+        self.msgtimer = time.time()
+        self.timeout = random.uniform(.3,.5)
+
 
     def doPutRequest(self, msg):
         hdst = msg['src']
         mid = msg['MID']
         leader = msg["leader"]
-        print("Our current leader is :" + self.currentLeader)
+        #print("Our current leader is :" + self.currentLeader)
         
         if(self.state == states[0] or self.state == states[1]):
             self.msgqueue.append(msg)
@@ -297,11 +313,27 @@ class Replica:
 
 
     def removebadEntries(self, logentry, explog):
-        #truncate the logs properly...
+        #TODO truncate the logs properly..., when there is an actual hard parititon need to get rid of bad entries within the log
+
+        #again where we are vs where we think you are, we take the min of that
+        #if where we think you are is less, but it doesn't have the correct term, then you should only take what we have and remove anything afterwards
+        #getting the very best index to compare
+
 
         currentlog = len(self.transactionlog)
         #where we are vs where we think we are,
-        meaningfulentries = currentlog - explog
+        if(currentlog > explog):
+            #last comparable log index they share
+            lastlogindex =  min(currentlog, len(logentry) + explog) - 1
+            #does this make sense?
+            logdifference = (lastlogindex - (explog - 1)) - 1
+            print("the log difference crafted is this: " + str(logdifference))
+            print("the length of the actual log entry is this: " + str(len(logentry)))
+            if(self.transactionlog[lastlogindex][1] != logentry[logdifference][1]):
+                newlog = self.transactionlog[:explog]
+                self.transactionlog = newlog
+
+        meaningfulentries = len(self.transactionlog) - explog
         #print("meaningful entries: " + str(meaningfulentries) + " where the log things we are: " + str(explog))
 
         #don't want to remove entries that the log already has, and are commited, 
@@ -421,7 +453,7 @@ class Replica:
         newterm = self.term + 1
         self.term = newterm
         self.state = states[1]
-        self.leader = "FFFF"
+        #self.leader = "FFFF"
         #for each replica relay the message and the new term number, and tell themt that we want to request a vote for a leader.
         RequestVote = {"src": self.id, "dst": None, "leader": self.currentLeader, "type": "voting", "newterm": newterm, "votedfor" : self.id, "lastIndex": len(self.transactionlog)}
         if(len(self.transactionlog) > 0):
@@ -496,6 +528,7 @@ class Replica:
         else:
             #else the term must be the same, otherwise it would not have voted.
             #print("current amount of votes recieved" + str(self.votes))
+            print("Replica: " + self.id + "received a vote")
             if(msg['voted?'] == "true"):
                 self.votes += 1
 

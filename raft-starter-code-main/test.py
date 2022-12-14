@@ -6,5 +6,4 @@ testarray.append(other)
 
 testdict = {}
 testlist = [3, 2, 1, 0]
-for i in range(4, len(testlist)):
-    print(testlist[i])
+print(testlist[:2])

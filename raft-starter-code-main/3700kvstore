@@ -6,7 +6,6 @@ BROADCAST = "FFFF"
 #not sure if states can be openly strings, 
 states = ["FOLLOWER", "CANDIDATE", "LEADER"]
 statemachine = {}
-#no shot but does being a global variable fuck things up?
 
 class ReplicaStateModel:
     def __intit__(self):
@@ -57,12 +56,18 @@ class Replica:
                 currenttime = time.time()
                 randomizedtime = random.uniform(.3, .5)
                 socks = select.select(socket, [], [], randomizedtime)[0]
+                #having a timeer on select is weird, idk how it worked last time,
+                # but now random leader crashes just clog the socket so it won't time out...
                 latertime = time.time()
                 
                 #if we have not heard anything within the time, then we have timed out, and there needs to be a new election 
                 if(latertime - currenttime > randomizedtime):
                     self.currentLeader == "FFFF"
+                    print("Heading into candidate state!")
                     self.electionProcess()
+
+                print("this is when the socket exits the select:" + str(latertime - currenttime))
+                print("this was the randomized time created:" + str(randomizedtime))     
 
                 #else we should recieve on the socket like normal    
                 for conn in socks:
@@ -99,10 +104,10 @@ class Replica:
             #print("Received message '%s'" % (msg,), flush=True)
             self.doGetRequest(msg)
         if(msg['type'] == "voting"):
-            #print("Received message '%s'" % (msg,), flush=True)
+            print("Received message '%s'" % (msg,), flush=True)
             self.voteLeader(msg)
         if(msg['type'] == "vote"):
-            #print("Received message '%s'" % (msg,), flush=True)
+            print("Received message '%s'" % (msg,), flush=True)
             self.processVote(msg)
             if(self.votes >= 3):
                 #clear out the amount of votes we recieved.
@@ -118,32 +123,15 @@ class Replica:
                     self.responselen[replica] = 0
                     self.send(newLeaderMessage)
 
+                #self.sendredirects()    
+
         if(msg['type'] == "update"):
             if(msg['term'] < self.term):
                 self.send({"src": self.id, "dst": msg['src'],  "leader": self.currentLeader, "type" : "response", "success" : "false", "term": self.term})
 
             else:
                 self.currentLeader = msg["leader"]
-                #self.commitEntriesReplica(msg['commitlength'])
-                #then make redirects for the sender go through what we have in our sendlist, and make redirects for them, I also just realized, I never remove these entries...
-                
-                #if the same leader who we started the message queue becomes leader, then this shit breaks, and those redirects are lost, but for some reason the leader just is not found.
-                if(len(self.msgqueue) > 0):
-                    print("MADE IT HERE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                    print("we recieved this many messages while a leader was down: " + str(len(self.msgqueue)))
-                    #probably just need to pop the items off the queue like normal
-
-                    #or make this the remaining entries to send?
-                    for item in self.msgqueue:
-                        #print("we made it here, redirected a couple messages! ")
-                        dest =  item['src']
-                        mid = item["MID"]
-                        redirectmessage = {"src": self.id, "dst": dest,  "leader": self.currentLeader, "type": "redirect", "MID": mid}
-                        print(str(self.id) + " sent out a redirect to this leader: " + self.currentLeader)
-                        self.send(redirectmessage)
-                        self.msgqueue.remove(item)
-
-
+                #self.sendredirects()  
 
         if(msg['type'] == "response"):
             print("Received message '%s'" % (msg,), flush=True)
@@ -153,25 +141,57 @@ class Replica:
             print("Received message '%s'" % (msg,), flush=True)
             self.processAppendEntry(msg)
 
+    #replica outright died, why didn't it hold a new election?        
+    def sendredirects(self):
+        if(self.state == states[2]):
+            if(len(self.msgqueue) > 0):
+                #if this still breaks, could just use a while loop to make my life easier and just pop an item off one at a time.
+                #keys are still the same, so I assume that for some reason this loop doesn't exit once it hits the leader.
+                for i in self.msgqueue:
+                    msgfrom = i['src']
+                    mid = i['MID']
+                    redirectmessage = {"src": self.id, "dst": msgfrom,  "leader": self.id, "type": "redirect", "MID": mid}
+                    self.send(redirectmessage)
+                    self.msgqueue.remove(i)
+        else:
+            if(self.currentLeader != 'FFFF'):
+                if(len(self.msgqueue) > 0):
+                    for i in self.msgqueue:
+                        msgfrom = i['src']
+                        mid = i['MID']
+                        redirectmessage = {"src": self.id, "dst": msgfrom,  "leader": self.currentLeader, "type": "redirect", "MID": mid}
+                        self.send(redirectmessage)
+                        self.msgqueue.remove(i)
+            else:
+                print("made it here!, why are we still redirecting?")                        
 
     def doPutRequest(self, msg):
         hdst = msg['src']
         mid = msg['MID']
         leader = msg["leader"]
+        print("Our current leader is :" + self.currentLeader)
         
         if(self.state == states[0] or self.state == states[1]):
+            self.msgqueue.append(msg)
+
+
             #if the leader coming in is not what we expect, then redirect them with the correct leader
-            if(leader != self.currentLeader):
-                #if the leader is unkown then queue, and once we get the append entries from one we deem to be a leader, send
-                if(self.currentLeader == 'FFFF'):
-                    self.msgqueue.append(msg)
-                else:
-                    redirectmessage = {"src": self.id, "dst": hdst,  "leader": self.currentLeader, "type": "redirect", "MID": mid}
-                    self.send(redirectmessage)
-            else:
-                #else the leader is correct, but somehow it still managed to reach this replica, so we still forward.
-                redirectmessage = {"src": self.id, "dst": hdst,  "leader": self.currentLeader, "type": "redirect", "MID": mid}
-                self.send(redirectmessage)
+        #    if(leader != self.currentLeader):
+        #        #if the leader is unkown then queue, and once we get the append entries from one we deem to be a leader, send
+        #        if(self.currentLeader == 'FFFF'):
+        #            self.msgqueue.append(msg)
+        #        else:
+        #            redirectmessage = {"src": self.id, "dst": hdst,  "leader": self.currentLeader, "type": "redirect", "MID": mid}
+        #            self.send(redirectmessage)
+        #            print("made it to this case for some reason!1")
+        #    else:
+        #        if(self.currentLeader == 'FFFF'):
+        #            self.msgqueue.append(msg)
+        #        else:
+        #        #else the leader is correct, but somehow it still managed to reach this replica, so we still forward.
+        #            redirectmessage = {"src": self.id, "dst": hdst,  "leader": self.currentLeader, "type": "redirect", "MID": mid}
+        #            self.send(redirectmessage)
+        #            print("made it to this case for some reason!2")
         
         else:
         #if(leader == self.currentLeader):
@@ -207,22 +227,13 @@ class Replica:
         rloglength = self.nextIndex[replica]
         #Difference = len(self.transactionlog) - rloglength
         entries = self.transactionlog[rloglength::]
-        return entries
-
-        #entries = []
-        #10, 8 ,2 ,second inded insteads of the last two
-        #for i in range(Difference):
-        #    entry = self.transactionlog[rloglength + i]
-        #    entries.append(entry) 
-
-
-        #return entries    
+        return entries 
 
     #method for a follower:
     def processAppendEntry(self, msg):
         lterm = msg["term"]
 
-        failMsg = {"src": self.id, "dst": self.currentLeader,  "leader": self.currentLeader, "type" : "response", "success" : "false", "term": self.term}
+        failMsg = {"src": self.id, "dst": msg['src'],  "leader": self.currentLeader, "type" : "response", "success" : "false", "term": self.term}
         if(lterm >= self.term):
             self.votedFor = None
             self.state = states[0]
@@ -286,6 +297,8 @@ class Replica:
 
 
     def removebadEntries(self, logentry, explog):
+        #truncate the logs properly...
+
         currentlog = len(self.transactionlog)
         #where we are vs where we think we are,
         meaningfulentries = currentlog - explog

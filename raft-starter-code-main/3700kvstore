@@ -53,26 +53,26 @@ class Replica:
 
     def run(self):
         while True:
-            #this needs an entire rework because now that I care about receiving missed messages for the leader,
-            # and for some reason, the timeouts before gets clogged from the incoming put requests so I need to change the timeout system.
-
             socket = [self.socket]
             if(self.state == "FOLLOWER" or self.state == "CANDIDATE"):
-                currenttime = time.time()
-                randomizedtime = random.uniform(.3, .5)
+                #currenttime = time.time()
+                #randomizedtime = random.uniform(.3, .5)
                 socks = select.select(socket, [], [], self.timeout)[0]
                 #having a timeer on select is weird, idk how it worked last time,
                 # but now random leader crashes just clog the socket so it won't time out...
-                latertime = time.time()
+                #latertime = time.time()
                 
                 #if we have not heard anything within the time, then we have timed out, and there needs to be a new election 
                 #anything that we care about for the candidate/follower i.e a message from a leader, not put request,
                 v = time.time() - self.msgtimer
-                if(latertime - currenttime > randomizedtime):
+                if(v > self.timeout):
                     #only happens when the simulator doesn't know who the leader is...
                     #self.currentLeader = self.id
                     #print("Heading into candidate state!")
-                    self.electionProcess()    
+                    print("Replica: " + self.id + " timed out now starting an election.")
+                    print("it's initial time is: " + str(self.msgtimer) + " and its's timeout is: " + str(self.timeout))
+                    self.resettimer()
+                    self.electionProcess()
 
                 #else we should recieve on the socket like normal    
                 for conn in socks:
@@ -103,7 +103,7 @@ class Replica:
         msg = json.loads(msg)
 
         if(msg["type"] == "put"):
-            print("Received message '%s'" % (msg,), flush=True)
+            #print("Received message '%s'" % (msg,), flush=True)
             self.doPutRequest(msg)
         if(msg["type"] == "get"):
             #print("Received message '%s'" % (msg,), flush=True)
@@ -147,8 +147,8 @@ class Replica:
             self.determineResponse(msg)
 
         if(msg['type'] == 'appendEntry'):
-            self.resettimer()
-            print("Received message '%s'" % (msg,), flush=True)
+            #self.resettimer()
+            #print("Received message '%s'" % (msg,), flush=True)
             self.processAppendEntry(msg)
 
     #replica outright died, why didn't it hold a new election?        
@@ -176,7 +176,6 @@ class Replica:
                 print("made it here!, why are we still redirecting?")    
 
     def resettimer(self):
-        #print("my message timer was reset because I received a message")
         self.msgtimer = time.time()
         self.timeout = random.uniform(.3,.5)
 
@@ -241,9 +240,12 @@ class Replica:
         #what we suspect the replicas log to be at
         #this is wrong it sends the first part of the log not the last half, thats why when new entries comes in, it sends the wrong stuff...
         rloglength = self.nextIndex[replica]
-        #Difference = len(self.transactionlog) - rloglength
-        entries = self.transactionlog[rloglength::]
-        return entries 
+        if(len(self.transactionlog) - rloglength > 80):
+            print("you must have died, not sending amymore messages")
+            return []
+        else:
+            entries = self.transactionlog[rloglength::]
+            return entries 
 
     #method for a follower:
     def processAppendEntry(self, msg):
@@ -254,6 +256,7 @@ class Replica:
             self.votedFor = None
             self.state = states[0]
             self.term = lterm
+            self.resettimer()
 
             explog = msg['lastIndex']
             logentry = msg['entries']
@@ -313,12 +316,10 @@ class Replica:
 
 
     def removebadEntries(self, logentry, explog):
-        #TODO truncate the logs properly..., when there is an actual hard parititon need to get rid of bad entries within the log
 
         #again where we are vs where we think you are, we take the min of that
         #if where we think you are is less, but it doesn't have the correct term, then you should only take what we have and remove anything afterwards
         #getting the very best index to compare
-
 
         currentlog = len(self.transactionlog)
         #where we are vs where we think we are,
@@ -481,6 +482,7 @@ class Replica:
             self.state = states[0]
             self.term = term
             self.votedFor = None
+            self.resettimer()
 
             candidatelength = msg["lastIndex"]
             if(candidatelength == 0):
@@ -518,6 +520,7 @@ class Replica:
 
     def processVote(self, msg):
         #just quick error handling for when a message may fail and someone has a greater term it transitions back into follower
+        self.resettimer()
         term = msg["term"]
         if(term > self.term):
             self.state = states[0]

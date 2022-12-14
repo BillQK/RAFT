@@ -25,7 +25,7 @@ class Replica:
         #starts at the index of the new leaders log
         self.nextIndex = {}
         #dictionary for each replica to determine how much they have acknowledged
-        self.responselen = {}
+        self.matchIndex = {}
         #array for when the leader is unknown, and a follower recieves get/put requests, it'll store it in here.
         self.msgqueue = []
         #clock for determining when we haven't recieved messages from the leader.
@@ -52,8 +52,6 @@ class Replica:
                 #timer for determining when we haven't heard from the leader in a while.
                 v = time.time() - self.msgtimer
                 if(v > self.timeout):
-                    print("Replica: " + self.id + " timed out now starting an election.")
-                    print("it's initial time is: " + str(self.msgtimer) + " and its's timeout is: " + str(self.timeout))
                     self.resettimer()
                     self.electionProcess()
    
@@ -82,17 +80,13 @@ class Replica:
         msg = json.loads(msg)
 
         if(msg["type"] == "put"):
-            #print("Received message '%s'" % (msg,), flush=True)
             self.doPutRequest(msg)
         if(msg["type"] == "get"):
-            #print("Received message '%s'" % (msg,), flush=True)
             self.doGetRequest(msg)
         if(msg['type'] == "voting"):
-            print("Received message '%s'" % (msg,), flush=True)
             self.voteLeader(msg)
         if(msg['type'] == "vote"):
             self.resettimer()
-            print("Received message '%s'" % (msg,), flush=True)
             self.processVote(msg)
             if(self.votes >= 3):
                 #clear total amount of votes recieved and shift into leader state
@@ -104,7 +98,7 @@ class Replica:
                     newLeaderMessage = {"src": self.id, "dst": replica , "leader": self.id, "type": "update", "term": self.term, "commitlength": self.committed}
                     self.currentLeader = self.id
                     self.nextIndex[replica] = len(self.transactionlog)
-                    self.responselen[replica] = 0
+                    self.matchIndex[replica] = 0
                     self.send(newLeaderMessage)
 
                 #also if newley elected leader, handle potential redirects stored when we did not know the leader.    
@@ -123,7 +117,6 @@ class Replica:
                 self.sendredirects()  
  
         if(msg['type'] == "response"):
-            print("Received message '%s'" % (msg,), flush=True)
             self.determineResponse(msg)
 
         if(msg['type'] == 'appendEntry'):
@@ -163,11 +156,10 @@ class Replica:
             self.msgqueue.append(msg)
 
         else:
-            print("LEADER RECIEVED MSG: " + mid + msg['key'])
             location = (msg['key'], msg['value'], hdst, mid)
             logentry = (location, self.term)
             self.transactionlog.append(logentry)
-            self.responselen[self.id] = len(self.transactionlog)
+            self.matchIndex[self.id] = len(self.transactionlog)
 
             #send to replicas, and wait for their response
             for replica in self.others:
@@ -223,14 +215,10 @@ class Replica:
                     CorrectMsg = {"src": self.id, "dst": self.currentLeader,  "leader": self.currentLeader, "type" : "response", "success" : "true", "loglength" : len(self.transactionlog), "term": self.term}
                     self.send(CorrectMsg)
                 else:
-                    print("this case failed, term of my last transaction log is different" )
                     self.send(failMsg)
             else:
-                print("this case failed, length of my transaction log is:" + str(len(self.transactionlog)))
                 self.send(failMsg)
         else:
-            print("My current term: " + str(self.term) + " leaders current term: " + str(lterm))
-            print("leader's term is not right, did not append entries")
             self.send(failMsg)         
 
     #For a replica: commits the entries based on the leaders commit index
@@ -253,8 +241,6 @@ class Replica:
             lastlogindex =  min(currentlog, len(logentry) + explog) - 1
             #does this make sense?
             logdifference = (lastlogindex - (explog - 1)) - 1
-            print("the log difference crafted is this: " + str(logdifference))
-            print("the length of the actual log entry is this: " + str(len(logentry)))
             if(self.transactionlog[lastlogindex][1] != logentry[logdifference][1]):
                 newlog = self.transactionlog[:explog]
                 self.transactionlog = newlog
@@ -265,7 +251,7 @@ class Replica:
         self.transactionlog.extend(entries)
 
     #Method for a leader: after revieving an appendEntry response from the follower determines whether we can update their
-    #nextIndex and responselen , if the message failed decreases the index by 1 and sends the next entry again
+    #nextIndex and matchIndex , if the message failed decreases the index by 1 and sends the next entry again
     def determineResponse(self, msg):
         if(self.state == states[2]):
             term = msg["term"]
@@ -274,20 +260,18 @@ class Replica:
                 self.term = term
                 self.votedFor = None
                 self.currentLeader = BROADCAST
-                print("recognized bad term, my new state is: " + self.state)
 
             else:
                 if(msg['success'] == "true"):
-                    fresponselen = msg['loglength']
+                    fmatchIndex = msg['loglength']
                     follower = msg['src']
-                    self.responselen[follower] = fresponselen
-                    self.nextIndex[follower] = fresponselen
+                    self.matchIndex[follower] = fmatchIndex
+                    self.nextIndex[follower] = fmatchIndex
                     self.determineCommitted(msg)
                 
                 else:
                     src = msg["src"]
                     item = self.nextIndex[src]
-                    print("Replica :" + str(src) + " last Index did not match shifting back:" + str(item))
                     self.nextIndex[src] = item - 1
 
                     newentries = self.createEntries(src)
@@ -301,9 +285,8 @@ class Replica:
     def determineCommitted(self, msg):
         while(self.committed < len(self.transactionlog)):
             totalcommitted = 0
-            for k, v in self.responselen.items():
+            for k, v in self.matchIndex.items():
                 if(v > self.committed and v > 0):
-                    print("Node: " + str(k) + " Length " + str(v))
                     totalcommitted += 1
 
             if(totalcommitted >= 3):
@@ -315,7 +298,6 @@ class Replica:
                 src = value = self.transactionlog[self.committed - 1][0][2]
                 mid = self.transactionlog[self.committed - 1][0][3]
 
-                print("MSGID and key added: " + mid + " " + key)
                 okmessage = {"src": self.id, "dst": src,  "leader": self.currentLeader, "type": "ok", "MID": mid}
                 self.send(okmessage)
 
@@ -407,16 +389,13 @@ class Replica:
                         GoodVote["term"] = self.term
                         self.send(GoodVote)
                     else:
-                        print("this case triggered when we sent a bad vote2")
                         BadVote["term"] = self.term
                         self.send(BadVote)
                 else:
-                    print("this case triggered when we sent a bad vote1")
                     BadVote["term"] = self.term
                     self.send(BadVote)
 
         else:
-            print("this case triggered when we sent a bad vote3")
             BadVote["term"] = self.term
             self.send(BadVote)
 
@@ -433,7 +412,6 @@ class Replica:
 
         else:
             #else the term must be the same, otherwise it would not have voted.
-            print("Replica: " + self.id + "received a vote")
             if(msg['voted?'] == "true"):
                 self.votes += 1
 

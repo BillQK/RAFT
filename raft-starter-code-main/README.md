@@ -10,7 +10,7 @@ Timeout: randomly generated timeout for determining whether the leader has faile
 
 Committed: int for determining how many entries have reached quorum from the group of nodes.
 LastIndex: Index that corresponds to where the leader believes the replicas log index is.
-ResponseLen: Index that corresponds to how many messages have been acknowledged by the replica.
+matchIndex: Index that corresponds to how many messages have been acknowledged by the replica.
 Lastly fields for determining how many votes a replica has received and who they have votedFor in the current term.
 
 Walking you through the program, starting with the run method, we first have two cases one for whether the state of the replica is either a candidate or follower, and the other for when the state is the leader. If we are in the follower state/candidate state we have a timer that determines based on our randomly selected timeout whether we should start a new election(following the 5.2 procedure and 5.4.1 safety procedure). If we are in the leader state we have a timer for sending heartbeats to the other followers.

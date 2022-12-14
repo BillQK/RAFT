@@ -5,7 +5,7 @@ import argparse, socket, time, json, select, struct, sys, math, os, random
 #heads up, may refactor all the names of these methods to the names within the actual RAFT document, idk tho
 BROADCAST = "FFFF"
 states = ["FOLLOWER", "CANDIDATE", "LEADER"]
-statemachine = {}
+kvstore = {}
 
 class Replica:
     def __init__(self, port, id, others):
@@ -173,7 +173,7 @@ class Replica:
             for replica in self.others:
                 newlog = self.createEntries(replica)
 
-                AppendMessage = {"src": self.id, "dst": replica,  "leader": self.currentLeader, "type": "appendEntry", "commitlength": self.committed, "entries": newlog, "term": self.term ,"statemachinelen" : len(statemachine)}
+                AppendMessage = {"src": self.id, "dst": replica,  "leader": self.currentLeader, "type": "appendEntry", "commitlength": self.committed, "entries": newlog, "term": self.term ,"kvstorelen" : len(kvstore)}
 
                 if(self.nextIndex[replica] == 0):
                     AppendMessage['lastIndex'] = 0
@@ -240,7 +240,7 @@ class Replica:
             self.committed +=1
             key = self.transactionlog[self.committed -1][0][0]
             value = self.transactionlog[self.committed -1][0][1]
-            statemachine[key] = value
+            kvstore[key] = value
 
             count += 1  
 
@@ -310,7 +310,7 @@ class Replica:
                 self.committed +=1
                 key = self.transactionlog[self.committed -1][0][0]
                 value = self.transactionlog[self.committed -1][0][1]
-                statemachine[key] = value
+                kvstore[key] = value
 
                 src = value = self.transactionlog[self.committed - 1][0][2]
                 mid = self.transactionlog[self.committed - 1][0][3]
@@ -342,7 +342,7 @@ class Replica:
         else:
             try:
                 key = msg['key']
-                value = statemachine[key]
+                value = kvstore[key]
                 okmessage = {"src": self.id, "dst": hdst,  "leader": self.currentLeader, "type": "ok", "MID": mid, "value": value}
                 self.send(okmessage)
 
